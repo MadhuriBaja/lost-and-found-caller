@@ -73,7 +73,7 @@ export async function POST(request: Request) {
         {
           success: false,
           message:
-            `${selectedLocation.name} is not enabled for live calling yet. A verified contact number is required before a real CALL-E call can be made.`,
+            `${selectedLocation.name} is not enabled for live calling yet.`,
         },
         { status: 400 }
       );
@@ -94,39 +94,21 @@ export async function POST(request: Request) {
 
     const client = new CalleClient({
       apiKey,
+      baseUrl: "https://api.heycall-e.com",
     });
 
     const task = `
-You are Lost&Found Caller, an AI assistant helping a person recover a lost item.
+You are Lost&Found Caller, an AI assistant helping someone recover a lost item.
 
-You are calling the ${selectedLocation.name} main contact number.
+Call the recipient and politely ask about the lost item.
 
-The contact type for this location is:
+You are contacting:
+${selectedLocation.name}
+
+Contact type:
 ${selectedLocation.contactType}
 
-Your job is to communicate with the person who answers the phone and determine whether the lost item may have been found.
-
-IMPORTANT CONVERSATION RULES:
-
-1. Start politely and clearly identify yourself as an AI assistant calling about a lost item.
-
-2. Ask who you are speaking with and whether they handle lost-and-found matters.
-
-3. Listen carefully and WAIT for the person to respond after each question. Do not continue speaking over them.
-
-4. If the person is NOT responsible for lost-and-found:
-   - Politely ask whether they can connect you to customer care, security, reception, or the lost-and-found team.
-   - If they cannot transfer you, ask whether they know the appropriate department or contact point.
-   - Do not become repetitive.
-
-5. If the person IS responsible for lost-and-found:
-   - Explain that you are helping someone search for a lost item.
-   - Give the item details clearly.
-   - Ask whether an item matching the description has been found or handed in.
-
-6. Lost item information:
-
-Item:
+Lost item:
 ${itemName}
 
 Description:
@@ -135,89 +117,166 @@ ${description}
 Approximate time lost:
 ${lostWhen}
 
-7. If they say an item has been found:
-   - Ask only a few non-sensitive characteristics to compare it with the user's description.
-   - Examples include color, type, visible markings, accessories, or general contents.
-   - Do not ask for passwords, OTPs, payment information, government IDs, or other sensitive information.
-   - Do not ask them to reveal private information about another person.
+Conversation rules:
 
-8. If they say nothing has been found:
-   - Ask whether the item could still be logged later.
-   - Ask what the appropriate next step would be.
+1. Introduce yourself as an AI assistant helping someone locate a lost item.
 
-9. If the person cannot help:
-   - Politely end the call and record that the inquiry could not be completed.
+2. Ask who you are speaking with and whether they handle lost-and-found matters.
 
-10. Never claim that the item definitely belongs to the user.
-    Only report a POSSIBLE MATCH when the information provided by the recipient reasonably matches the lost-item description.
+3. Wait for the recipient to answer before continuing.
 
-11. Before ending the conversation, determine one of these outcomes:
-   - YES: possible match
-   - NO: no matching item reported
-   - UNKNOWN: the inquiry could not be completed or there was insufficient information
+4. If they are not responsible for lost-and-found, politely ask whether they can direct you to the correct department.
 
-12. Thank the person for their time.
+5. If they handle lost-and-found, explain the item details and ask whether a matching item has been found or handed in.
 
-Keep the conversation natural, short, polite, and focused on the lost item.
+6. If they report a possible item, compare only non-sensitive characteristics such as:
+   - color
+   - item type
+   - visible markings
+   - accessories
+   - general contents
+
+7. Never ask for:
+   - passwords
+   - OTPs
+   - payment information
+   - government identification numbers
+   - private information about another person
+
+8. Never claim the item definitely belongs to the user.
+
+9. Determine the final result:
+   - yes = possible match
+   - no = no matching item reported
+   - unknown = inquiry could not be completed
+
+10. Ask about the appropriate next step when possible.
+
+11. Thank the recipient and end the call politely.
+
+Keep the conversation natural, short, and focused.
 `;
 
-    const call = await client.calls.createAndWait({
-      recipients: [
-        {
-          phones: [phoneNumber],
-        },
-      ],
-      task,
-      resultSchema: {
-        type: "object",
-        required: [
-          "possible_match",
-          "staff_summary",
-          "matched_details",
-          "next_step",
-          "contact_status",
+    console.log("Starting CALL-E call...");
+    console.log("Recipient:", phoneNumber);
+    console.log("Location:", selectedLocation.name);
+
+    const call = await client.calls.createAndWait(
+      {
+        task,
+
+        recipients: [
+          {
+            phones: [phoneNumber],
+            region: "IN",
+            locale: "en-IN",
+          },
         ],
-        properties: {
-          possible_match: {
-            type: "string",
-            enum: ["yes", "no", "unknown"],
-          },
-          staff_summary: {
-            type: "string",
-          },
-          matched_details: {
-            type: "string",
-          },
-          next_step: {
-            type: "string",
-          },
-          contact_status: {
-            type: "string",
-            enum: [
-              "staff_reached",
-              "wrong_department",
-              "could_not_reach_staff",
-              "unknown",
-            ],
+
+        resultSchema: {
+          type: "object",
+          required: [
+            "possible_match",
+            "staff_summary",
+            "matched_details",
+            "next_step",
+            "contact_status",
+          ],
+          properties: {
+            possible_match: {
+              type: "string",
+              enum: ["yes", "no", "unknown"],
+            },
+            staff_summary: {
+              type: "string",
+            },
+            matched_details: {
+              type: "string",
+            },
+            next_step: {
+              type: "string",
+            },
+            contact_status: {
+              type: "string",
+              enum: [
+                "staff_reached",
+                "wrong_department",
+                "could_not_reach_staff",
+                "unknown",
+              ],
+            },
           },
         },
-        additionalProperties: false,
+
+        recipientResultSchema: {
+          type: "object",
+          required: [
+            "possible_match",
+            "staff_summary",
+            "next_step",
+          ],
+          properties: {
+            possible_match: {
+              type: "string",
+              enum: ["yes", "no", "unknown"],
+            },
+            staff_summary: {
+              type: "string",
+            },
+            next_step: {
+              type: "string",
+            },
+          },
+        },
+
+        metadata: {
+          workflow: "lost-and-found-caller",
+          location: selectedLocation.name,
+        },
       },
-    });
+      {
+        idempotencyKey: `lost-found-${Date.now()}`,
+      }
+    );
+
+    const recipient = call.recipients?.[0];
+
+    console.log("CALL-E call status:", call.status);
+    console.log("CALL-E recipient:", recipient);
 
     return NextResponse.json({
       success: true,
-      message: "Lost&Found AI call completed successfully.",
+
+      message: "CALL-E request completed.",
+
+      callStatus: call.status,
+
+      taskCompleted: call.taskCompleted,
+
+      completionConfidence: call.completionConfidence,
+
+      evidence: call.evidence,
+
       location: {
         id: selectedLocation.id,
         name: selectedLocation.name,
         city: selectedLocation.city,
         contactType: selectedLocation.contactType,
       },
+
+      recipient: recipient
+        ? {
+            status: recipient.status,
+            phones: recipient.phones,
+            structuredResult: recipient.structuredResult,
+            attempts: recipient.attempts,
+          }
+        : null,
+
       call,
     });
   } catch (error) {
-    console.error("Lost&Found CALL-E error:", error);
+    console.error("CALL-E error:", error);
 
     const errorMessage =
       error instanceof Error
