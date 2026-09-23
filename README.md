@@ -397,26 +397,22 @@ The production deployment uses environment variables for the Supabase configurat
 
 ---
 
-## 🎥 Demo Video
+## 🎥 Demo Videos
 
-A complete demonstration of the project will be added here.
+### CALL-E Application Demo
 
-The demo will show:
+This video demonstrates the complete Lost & Found Caller application, including the CALL-E phone-calling workflow and the overall user experience.
 
-- Lost item submission
-- Search workflow
-- Demo/live calling workflow
-- Match result
-- Persistent search history
-- PostgreSQL database
-- Stored lost-item records
-- Call attempts
-- Conversation data
+**Watch the CALL-E Demo:**  
+https://youtu.be/VkZ7RFSmc_c
 
-**Demo Video:**  
-_Add video link after recording_
+### PostgreSQL Database Demo
 
----
+This video demonstrates the PostgreSQL database used by the application through Supabase, including the stored application records and database tables.
+
+**Watch the PostgreSQL Demo:**  
+https://youtu.be/AkPZ8N-0p98
+
 
 ## 🐘 PostgreSQL Database Demo
 
