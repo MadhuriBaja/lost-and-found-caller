@@ -486,13 +486,10 @@ https://lost-and-found-caller-1.vercel.app/
 
 https://github.com/MadhuriBaja/lost-and-found-caller
 
-### Demo Video
-
-_Add link after recording_
 
 ### Medium Article
 
-_Add link after publishing_
+https://medium.com/@madhurib4555/building-a-lost-found-caller-with-postgresql-and-call-e-7a938885abcf
 
 ---
 
