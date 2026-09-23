@@ -134,6 +134,10 @@ Demo conversation turns can also be stored in PostgreSQL and associated with the
                    ▼
           Lost & Found Result
 
+                   ▼
+          Lost & Found Result
+```
+
 ## 🗄️ PostgreSQL Database
 
 PostgreSQL is used as the persistent relational database for the application.
