@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { locations } from "./data/locations";
 import { demoCalls } from "./data/demoCalls";
 
@@ -230,7 +230,12 @@ export default function Home() {
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
 
   const validateForm = () => {
-    if (!itemName.trim() || !description.trim() || !location || !lostWhen.trim()) {
+    if (
+      !itemName.trim() ||
+      !description.trim() ||
+      !location ||
+      !lostWhen.trim()
+    ) {
       setMessage("Please complete all four fields before starting the search.");
       return false;
     }
@@ -243,24 +248,151 @@ export default function Home() {
     return true;
   };
 
+  /*
+   * Saves the current lost-item report into PostgreSQL.
+   * The actual Supabase secret key stays on the server inside
+   * /api/lost-items and is never exposed to the browser.
+   */
+  const saveLostItem = async () => {
+    try {
+      const response = await fetch("/api/lost-items", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          itemName,
+          description,
+          lostWhen,
+          lostLocation: location,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error("Failed to save lost item:", data);
+        return null;
+      }
+
+      console.log("Lost item saved to PostgreSQL:", data);
+
+      return data;
+    } catch (error) {
+      console.error("Error saving lost item:", error);
+      return null;
+    }
+  };
+
+  const saveCallAttempt = async (
+    lostItemId: number,
+    matchScore: number | null,
+    callResult: string,
+    scenarioId?: string
+  ) => {
+    try {
+      const response = await fetch("/api/call-attempts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          lostItemId,
+          locationId: location,
+          scenarioId: scenarioId || null,
+          status: "completed",
+          matchScore,
+          result: callResult,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error("Failed to save call attempt:", data);
+        return null;
+      }
+
+      console.log("Call attempt saved to PostgreSQL:", data);
+      return data;
+    } catch (error) {
+      console.error("Error saving call attempt:", error);
+      return null;
+    }
+  };
+
+  const saveCallTurns = async (
+    callAttemptId: number,
+    turns: ConversationTurn[]
+  ) => {
+    if (!turns.length) return null;
+
+    try {
+      const response = await fetch("/api/call-turns", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          callAttemptId,
+          turns,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error("Failed to save call turns:", data);
+        return null;
+      }
+
+      console.log("Call turns saved to PostgreSQL:", data);
+      return data;
+    } catch (error) {
+      console.error("Error saving call turns:", error);
+      return null;
+    }
+  };
+
   const calculateDemoMatch = () => {
     const userText = `${itemName} ${description}`.toLowerCase();
     const normalizedText = userText.replace(/[.,!?]/g, " ");
+
     const featureGroups = [
-      { label: "item type", keywords: ["backpack", "bag", "umbrella"] },
-      { label: "color", keywords: ["black", "red", "blue", "green", "white", "brown"] },
+      {
+        label: "item type",
+        keywords: ["backpack", "bag", "umbrella"],
+      },
+      {
+        label: "color",
+        keywords: ["black", "red", "blue", "green", "white", "brown"],
+      },
       {
         label: "distinctive feature",
-        keywords: ["keychain", "logo", "wooden handle", "handle", "marking"],
+        keywords: [
+          "keychain",
+          "logo",
+          "wooden handle",
+          "handle",
+          "marking",
+        ],
       },
-      { label: "contents", keywords: ["laptop", "phone", "wallet", "books", "charger"] },
+      {
+        label: "contents",
+        keywords: ["laptop", "phone", "wallet", "books", "charger"],
+      },
     ];
 
     const matchedFeatures: string[] = [];
 
     for (const group of featureGroups) {
-      const matchedKeyword = group.keywords.find((keyword) => normalizedText.includes(keyword));
-      if (matchedKeyword) matchedFeatures.push(`${group.label}: ${matchedKeyword}`);
+      const matchedKeyword = group.keywords.find((keyword) =>
+        normalizedText.includes(keyword)
+      );
+
+      if (matchedKeyword) {
+        matchedFeatures.push(`${group.label}: ${matchedKeyword}`);
+      }
     }
 
     const descriptionWords = description.trim().split(/\s+/).filter(Boolean);
@@ -272,7 +404,11 @@ export default function Home() {
     const score = Math.min(95, featureScore + detailBonus + timeBonus);
 
     let possibleMatch: "yes" | "no" | "unknown";
-    let confidenceLabel: "High confidence" | "Possible match" | "No match" | "Uncertain";
+    let confidenceLabel:
+      | "High confidence"
+      | "Possible match"
+      | "No match"
+      | "Uncertain";
 
     if (matchedFeatures.length >= 4 && score >= 80) {
       possibleMatch = "yes";
@@ -294,7 +430,9 @@ export default function Home() {
       confidenceLabel,
       matchedDetails:
         matchedFeatures.length > 0
-          ? `The AI found ${matchedFeatures.length} useful characteristic(s): ${matchedFeatures.join(", ")}.`
+          ? `The AI found ${matchedFeatures.length} useful characteristic(s): ${matchedFeatures.join(
+              ", "
+            )}.`
           : "The description did not contain enough distinctive characteristics to compare reliably.",
     };
   };
@@ -302,8 +440,60 @@ export default function Home() {
   const sleep = (milliseconds: number) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+  const loadHistory = async () => {
+    try {
+      const response = await fetch("/api/history");
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error("Failed to load search history:", data);
+        return;
+      }
+
+      const historyItems: HistoryItem[] = data.map((item: any) => {
+        let parsedResult: CallResult = {};
+
+        try {
+          parsedResult = item.result
+            ? JSON.parse(item.result)
+            : {};
+        } catch {
+          parsedResult = {
+            staff_summary: item.result ?? "Search completed.",
+          };
+        }
+
+        return {
+          id: item.id,
+          itemName: item.lost_items?.item_name ?? "Unknown item",
+          description: item.lost_items?.description ?? "",
+          locationName:
+            locations.find((place) => place.id === item.location_id)?.name ??
+            item.location_id ??
+            "Unknown location",
+          lostWhen: item.lost_items?.lost_when ?? "",
+          result: parsedResult,
+          mode: item.scenario_id === "live-call" ? "live" : "demo",
+          createdAt: new Date(item.created_at).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        };
+      });
+
+      setCallHistory(historyItems);
+    } catch (error) {
+      console.error("Error loading search history:", error);
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
   const addToHistory = (historyResult: CallResult) => {
     const selectedPlace = locations.find((place) => place.id === location);
+
     const historyItem: HistoryItem = {
       id: Date.now(),
       itemName,
@@ -312,7 +502,10 @@ export default function Home() {
       lostWhen,
       result: historyResult,
       mode: demoMode ? "demo" : "live",
-      createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      createdAt: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
     };
 
     setCallHistory((current) => [historyItem, ...current]);
@@ -332,16 +525,27 @@ export default function Home() {
     setDescription(scenario.description);
     setLostWhen(scenario.lostWhen);
     setLocation(scenario.location);
-    setMessage(`${scenario.title} demo loaded. Run the search to see the full workflow.`);
+    setMessage(
+      `${scenario.title} demo loaded. Run the search to see the full workflow.`
+    );
     setResult(null);
     setConversation([]);
     setCallStage("idle");
     setSelectedHistoryId(null);
-    document.getElementById("search")?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    document
+      .getElementById("search")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const handleDemoSearch = async () => {
     if (!validateForm()) return;
+
+    /*
+     * PostgreSQL integration:
+     * Save the lost-item report before starting the demo workflow.
+     */
+    const lostItem = await saveLostItem();
 
     setIsCalling(true);
     setResult(null);
@@ -351,10 +555,12 @@ export default function Home() {
     setCallStage("started");
 
     await sleep(650);
+
     setCallStage("calling");
     setMessage("Simulating a call to the selected location...");
 
     await sleep(800);
+
     setCallStage("speaking");
     setMessage("AI is speaking with Lost & Found staff...");
 
@@ -365,7 +571,9 @@ export default function Home() {
           scenario.description.toLowerCase() === description.toLowerCase()
       ) ?? demoScenarios[0];
 
-    const demoCall = demoCalls.find((call) => call.scenarioId === selectedScenario.id);
+    const demoCall = demoCalls.find(
+      (call) => call.scenarioId === selectedScenario.id
+    );
 
     if (demoCall) {
       for (const turn of demoCall.turns) {
@@ -375,34 +583,43 @@ export default function Home() {
     }
 
     await sleep(500);
+
     setCallStage("comparing");
     setMessage("Comparing the reported item with your description...");
 
     await sleep(800);
+
     const match = calculateDemoMatch();
+
     let staffSummary = "";
     let nextStep = "";
 
     if (match.possibleMatch === "yes") {
       staffSummary =
         "Demo simulation: the Lost & Found team reported an item with characteristics that align with the inquiry.";
+
       nextStep =
         "In a real search, visit the Lost & Found desk and verify the item's identifying details before collecting it.";
     } else if (match.possibleMatch === "no") {
       staffSummary =
         "Demo simulation: the Lost & Found team reported that no matching item was found.";
+
       nextStep =
         "In a real search, the AI could retry later or contact the location again if the item may be handed in later.";
     } else {
       staffSummary =
         "Demo simulation: an item may have been reported, but there are not enough distinctive details to establish a reliable match.";
+
       nextStep =
         "In a real search, provide additional identifying details such as color, brand, markings, contents, or accessories.";
     }
 
     const demoResult: CallResult = {
       possible_match: match.possibleMatch,
-      confidence: match.possibleMatch === "unknown" ? Math.max(25, match.score) : match.score,
+      confidence:
+        match.possibleMatch === "unknown"
+          ? Math.max(25, match.score)
+          : match.score,
       confidence_label: match.confidenceLabel,
       contact_status: "staff_reached",
       staff_summary: staffSummary,
@@ -411,6 +628,20 @@ export default function Home() {
     };
 
     setResult(demoResult);
+
+    if (lostItem?.id) {
+      const callAttempt = await saveCallAttempt(
+        lostItem.id,
+        demoResult.confidence ?? null,
+        demoResult.staff_summary ?? "Demo search completed.",
+        selectedScenario.id
+      );
+
+      if (callAttempt?.id && demoCall?.turns?.length) {
+        await saveCallTurns(callAttempt.id, demoCall.turns);
+      }
+    }
+
     addToHistory(demoResult);
     setCallStage("completed");
     setMessage("Demo search and matching completed.");
@@ -420,8 +651,17 @@ export default function Home() {
   const handleLiveSearch = async () => {
     if (!validateForm()) return;
 
-    const selectedLocation = locations.find((place) => place.id === location);
+    const selectedLocation = locations.find(
+      (place) => place.id === location
+    );
+
     if (!selectedLocation) return;
+
+    /*
+     * PostgreSQL integration:
+     * Save the lost-item report before making the live CALL-E request.
+     */
+    const lostItem = await saveLostItem();
 
     setIsCalling(true);
     setResult(null);
@@ -432,12 +672,15 @@ export default function Home() {
 
     try {
       await sleep(500);
+
       setCallStage("calling");
       setMessage("Connecting to Lost & Found Caller...");
 
       const response = await fetch("/api/call", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           itemName,
           description,
@@ -448,52 +691,89 @@ export default function Home() {
 
       setCallStage("speaking");
       setMessage("AI is communicating with the location...");
+
       const data = await response.json();
 
       if (!response.ok || !data.success) {
         setCallStage("completed");
-        setMessage(data.message || "The AI call could not be completed.");
+        setMessage(
+          data.message || "The AI call could not be completed."
+        );
         return;
       }
 
       setCallStage("comparing");
       setMessage("Processing the information received from staff...");
+
       await sleep(800);
 
-      const callResult = data.call?.structuredResult as CallResult | undefined;
+      const callResult = data.call?.structuredResult as
+        | CallResult
+        | undefined;
+
       setResult(callResult ?? null);
-      if (callResult) addToHistory(callResult);
+
+      if (callResult) {
+        addToHistory(callResult);
+
+        if (lostItem?.id) {
+          await saveCallAttempt(
+            lostItem.id,
+            callResult.confidence ?? null,
+            callResult.staff_summary ?? "Live CALL-E search completed.",
+            "live-call"
+          );
+        }
+      }
 
       setCallStage("completed");
       setMessage("Lost & Found AI call completed.");
     } catch (error) {
       console.error("Frontend call error:", error);
+
       setCallStage("completed");
-      setMessage("Something went wrong while connecting to Lost & Found Caller.");
+      setMessage(
+        "Something went wrong while connecting to Lost & Found Caller."
+      );
     } finally {
       setIsCalling(false);
     }
   };
 
   const handleSearch = () => {
-    if (demoMode) handleDemoSearch();
-    else handleLiveSearch();
+    if (demoMode) {
+      handleDemoSearch();
+    } else {
+      handleLiveSearch();
+    }
   };
 
   const handleHistorySelect = (historyItem: HistoryItem) => {
     setItemName(historyItem.itemName);
     setDescription(historyItem.description);
+
     setLocation(
-      locations.find((place) => place.name === historyItem.locationName)?.id ?? ""
+      locations.find(
+        (place) => place.name === historyItem.locationName
+      )?.id ?? ""
     );
+
     setLostWhen(historyItem.lostWhen);
     setResult(historyItem.result);
     setDemoMode(historyItem.mode === "demo");
     setSelectedHistoryId(historyItem.id);
     setConversation([]);
     setCallStage("completed");
-    setMessage(`Showing previous ${historyItem.mode === "demo" ? "demo" : "live"} search.`);
-    document.getElementById("search")?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    setMessage(
+      `Showing previous ${
+        historyItem.mode === "demo" ? "demo" : "live"
+      } search.`
+    );
+
+    document
+      .getElementById("search")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const clearHistory = () => {
@@ -503,15 +783,34 @@ export default function Home() {
   };
 
   const getConfidenceStyle = () => {
-    if (result?.confidence === undefined) return "border-slate-200 bg-slate-50 text-slate-600";
-    if (result.possible_match === "unknown") return "border-amber-200 bg-amber-50 text-amber-700";
-    if (result.confidence >= 80) return "border-emerald-200 bg-emerald-50 text-emerald-700";
-    if (result.confidence >= 40) return "border-amber-200 bg-amber-50 text-amber-700";
+    if (result?.confidence === undefined) {
+      return "border-slate-200 bg-slate-50 text-slate-600";
+    }
+
+    if (result.possible_match === "unknown") {
+      return "border-amber-200 bg-amber-50 text-amber-700";
+    }
+
+    if (result.confidence >= 80) {
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    }
+
+    if (result.confidence >= 40) {
+      return "border-amber-200 bg-amber-50 text-amber-700";
+    }
+
     return "border-rose-200 bg-rose-50 text-rose-700";
   };
 
-  const selectedLocation = locations.find((place) => place.id === location);
-  const activeStageIndex = callStage === "idle" ? -1 : callStages.findIndex((stage) => stage.id === callStage);
+  const selectedLocation = locations.find(
+    (place) => place.id === location
+  );
+
+  const activeStageIndex =
+    callStage === "idle"
+      ? -1
+      : callStages.findIndex((stage) => stage.id === callStage);
+
   const resultTone =
     result?.possible_match === "yes"
       ? "emerald"
@@ -530,29 +829,63 @@ export default function Home() {
       {/* Navigation */}
       <header className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/85 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8">
-          <a href="#top" className="flex items-center gap-3" aria-label="Lost and Found Caller home">
+          <a
+            href="#top"
+            className="flex items-center gap-3"
+            aria-label="Lost and Found Caller home"
+          >
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-950 text-white shadow-lg shadow-slate-950/10">
               <Icon name="phone" size={19} />
             </span>
-            <span className="text-sm font-extrabold tracking-tight sm:text-base">Lost&Found Caller</span>
+
+            <span className="text-sm font-extrabold tracking-tight sm:text-base">
+              Lost&Found Caller
+            </span>
           </a>
 
-          <nav className="hidden items-center gap-7 md:flex" aria-label="Main navigation">
-            <a href="#how-it-works" className="text-sm font-medium text-slate-500 transition hover:text-slate-950">How it works</a>
-            <a href="#search" className="text-sm font-medium text-slate-500 transition hover:text-slate-950">Search</a>
-            <a href="#history" className="text-sm font-medium text-slate-500 transition hover:text-slate-950">History</a>
+          <nav
+            className="hidden items-center gap-7 md:flex"
+            aria-label="Main navigation"
+          >
+            <a
+              href="#how-it-works"
+              className="text-sm font-medium text-slate-500 transition hover:text-slate-950"
+            >
+              How it works
+            </a>
+
+            <a
+              href="#search"
+              className="text-sm font-medium text-slate-500 transition hover:text-slate-950"
+            >
+              Search
+            </a>
+
+            <a
+              href="#history"
+              className="text-sm font-medium text-slate-500 transition hover:text-slate-950"
+            >
+              History
+            </a>
           </nav>
 
-          <a href="#search" className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-blue-600/20 transition hover:-translate-y-0.5 hover:bg-blue-700">
+          <a
+            href="#search"
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-blue-600/20 transition hover:-translate-y-0.5 hover:bg-blue-700"
+          >
             Start search <Icon name="arrow" size={16} />
           </a>
         </div>
       </header>
 
-      <div id="top" className="relative z-10 mx-auto max-w-6xl px-5 pb-16 pt-10 sm:px-8 sm:pt-14">
+      <div
+        id="top"
+        className="relative z-10 mx-auto max-w-6xl px-5 pb-16 pt-10 sm:px-8 sm:pt-14"
+      >
         {/* Hero */}
         <section className="relative overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-[0_25px_80px_-45px_rgba(15,23,42,0.35)]">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_85%_10%,rgba(59,130,246,0.13),transparent_28%),radial-gradient(circle_at_15%_90%,rgba(139,92,246,0.09),transparent_30%)]" />
+
           <div className="relative grid items-center gap-10 px-6 py-12 sm:px-10 lg:grid-cols-[1.1fr_0.9fr] lg:px-14 lg:py-16">
             <div>
               <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3.5 py-2 text-xs font-bold uppercase tracking-[0.14em] text-blue-700">
@@ -565,55 +898,104 @@ export default function Home() {
               </h1>
 
               <p className="mt-6 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-                Lost&Found Caller turns your item description into a focused phone inquiry, then returns a structured recovery result you can act on.
+                Lost&Found Caller turns your item description into a focused
+                phone inquiry, then returns a structured recovery result you
+                can act on.
               </p>
 
               <div className="mt-8 flex flex-wrap gap-3">
-                <a href="#search" className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-5 py-3.5 text-sm font-bold text-white shadow-xl shadow-slate-950/15 transition hover:-translate-y-0.5 hover:bg-slate-800">
+                <a
+                  href="#search"
+                  className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-5 py-3.5 text-sm font-bold text-white shadow-xl shadow-slate-950/15 transition hover:-translate-y-0.5 hover:bg-slate-800"
+                >
                   Find my item <Icon name="arrow" size={17} />
                 </a>
-                <a href="#how-it-works" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50">
+
+                <a
+                  href="#how-it-works"
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                >
                   See how it works
                 </a>
               </div>
 
               <div className="mt-8 flex flex-wrap gap-5 text-xs font-semibold text-slate-500">
-                <span className="inline-flex items-center gap-2"><Icon name="shield" size={15} /> Controlled contacts</span>
-                <span className="inline-flex items-center gap-2"><Icon name="sparkles" size={15} /> AI conversation</span>
-                <span className="inline-flex items-center gap-2"><Icon name="check" size={15} /> Structured result</span>
+                <span className="inline-flex items-center gap-2">
+                  <Icon name="shield" size={15} />
+                  Controlled contacts
+                </span>
+
+                <span className="inline-flex items-center gap-2">
+                  <Icon name="sparkles" size={15} />
+                  AI conversation
+                </span>
+
+                <span className="inline-flex items-center gap-2">
+                  <Icon name="check" size={15} />
+                  Structured result
+                </span>
               </div>
             </div>
 
             <div className="relative mx-auto w-full max-w-md lg:ml-auto">
               <div className="absolute -inset-5 rounded-[2rem] bg-blue-500/10 blur-2xl" />
+
               <div className="relative rounded-[1.75rem] border border-slate-200 bg-slate-950 p-5 text-white shadow-2xl shadow-slate-950/20">
                 <div className="flex items-center justify-between border-b border-white/10 pb-4">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">AI recovery agent</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                      AI recovery agent
+                    </p>
+
                     <p className="mt-1 font-bold">Lost item inquiry</p>
                   </div>
-                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-500/15 text-blue-300"><Icon name="phone" size={18} /></span>
+
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-500/15 text-blue-300">
+                    <Icon name="phone" size={18} />
+                  </span>
                 </div>
 
                 <div className="space-y-4 py-5">
                   <div className="rounded-2xl rounded-tl-md bg-white/10 p-4">
-                    <p className="text-[11px] font-bold uppercase tracking-wider text-blue-300">AI</p>
-                    <p className="mt-1 text-sm leading-6 text-slate-200">“I’m calling about a black backpack with a blue keychain. Has anything matching this been handed in?”</p>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-blue-300">
+                      AI
+                    </p>
+
+                    <p className="mt-1 text-sm leading-6 text-slate-200">
+                      “I’m calling about a black backpack with a blue
+                      keychain. Has anything matching this been handed in?”
+                    </p>
                   </div>
+
                   <div className="ml-8 rounded-2xl rounded-tr-md bg-blue-600 p-4">
-                    <p className="text-[11px] font-bold uppercase tracking-wider text-blue-100">Staff</p>
-                    <p className="mt-1 text-sm leading-6 text-white">“Yes, we have a black backpack that was handed in yesterday.”</p>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-blue-100">
+                      Staff
+                    </p>
+
+                    <p className="mt-1 text-sm leading-6 text-white">
+                      “Yes, we have a black backpack that was handed in
+                      yesterday.”
+                    </p>
                   </div>
                 </div>
 
                 <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-300">Recovery signal</p>
-                      <p className="mt-1 font-bold text-white">Likely match</p>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-300">
+                        Recovery signal
+                      </p>
+
+                      <p className="mt-1 font-bold text-white">
+                        Likely match
+                      </p>
                     </div>
-                    <span className="text-2xl font-black text-emerald-300">86%</span>
+
+                    <span className="text-2xl font-black text-emerald-300">
+                      86%
+                    </span>
                   </div>
+
                   <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
                     <div className="h-full w-[86%] rounded-full bg-emerald-400" />
                   </div>
@@ -624,49 +1006,117 @@ export default function Home() {
         </section>
 
         {/* How it works */}
-        <section id="how-it-works" className="scroll-mt-24 py-16 sm:py-20">
+        <section
+          id="how-it-works"
+          className="scroll-mt-24 py-16 sm:py-20"
+        >
           <div className="mx-auto max-w-2xl text-center">
-            <p className="text-xs font-extrabold uppercase tracking-[0.18em] text-blue-600">How it works</p>
-            <h2 className="mt-3 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">From lost item to recovery signal.</h2>
-            <p className="mt-4 text-sm leading-6 text-slate-500 sm:text-base">A simple workflow designed to make a frustrating search feel clear and actionable.</p>
+            <p className="text-xs font-extrabold uppercase tracking-[0.18em] text-blue-600">
+              How it works
+            </p>
+
+            <h2 className="mt-3 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">
+              From lost item to recovery signal.
+            </h2>
+
+            <p className="mt-4 text-sm leading-6 text-slate-500 sm:text-base">
+              A simple workflow designed to make a frustrating search feel
+              clear and actionable.
+            </p>
           </div>
 
           <div className="mt-10 grid gap-4 md:grid-cols-4">
             {[
-              { number: "01", icon: "file", title: "Describe", text: "Tell the AI what you lost, when, and where." },
-              { number: "02", icon: "phone", title: "Call", text: "CALL-E contacts the selected location." },
-              { number: "03", icon: "search", title: "Compare", text: "The response is checked against your details." },
-              { number: "04", icon: "check", title: "Recover", text: "Get a match signal and clear next step." },
+              {
+                number: "01",
+                icon: "file",
+                title: "Describe",
+                text: "Tell the AI what you lost, when, and where.",
+              },
+              {
+                number: "02",
+                icon: "phone",
+                title: "Call",
+                text: "CALL-E contacts the selected location.",
+              },
+              {
+                number: "03",
+                icon: "search",
+                title: "Compare",
+                text: "The response is checked against your details.",
+              },
+              {
+                number: "04",
+                icon: "check",
+                title: "Recover",
+                text: "Get a match signal and clear next step.",
+              },
             ].map((step, index) => (
-              <div key={step.number} className="group relative rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:shadow-xl hover:shadow-slate-200/50">
-                {index < 3 && <div className="absolute right-[-0.9rem] top-1/2 z-10 hidden -translate-y-1/2 text-slate-300 md:block"><Icon name="arrow" size={18} /></div>}
+              <div
+                key={step.number}
+                className="group relative rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:shadow-xl hover:shadow-slate-200/50"
+              >
+                {index < 3 && (
+                  <div className="absolute right-[-0.9rem] top-1/2 z-10 hidden -translate-y-1/2 text-slate-300 md:block">
+                    <Icon name="arrow" size={18} />
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between">
-                  <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-50 text-blue-600"><Icon name={step.icon} size={20} /></span>
-                  <span className="text-xs font-black tracking-widest text-slate-300">{step.number}</span>
+                  <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                    <Icon name={step.icon} size={20} />
+                  </span>
+
+                  <span className="text-xs font-black tracking-widest text-slate-300">
+                    {step.number}
+                  </span>
                 </div>
-                <h3 className="mt-5 text-lg font-extrabold">{step.title}</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-500">{step.text}</p>
+
+                <h3 className="mt-5 text-lg font-extrabold">
+                  {step.title}
+                </h3>
+
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  {step.text}
+                </p>
               </div>
             ))}
           </div>
         </section>
 
         {/* Search workspace */}
-        <section id="search" className="scroll-mt-24 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-[0_25px_80px_-50px_rgba(15,23,42,0.4)] sm:p-8 lg:p-10">
+        <section
+          id="search"
+          className="scroll-mt-24 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-[0_25px_80px_-50px_rgba(15,23,42,0.4)] sm:p-8 lg:p-10"
+        >
           <div className="flex flex-col gap-5 border-b border-slate-100 pb-7 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-[0.14em] text-slate-600">
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-600" /> Search workspace
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-600" />
+                Search workspace
               </div>
-              <h2 className="mt-3 text-2xl font-black tracking-tight sm:text-3xl">Tell us what you lost.</h2>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Add enough detail for the AI to ask a useful question and compare the right characteristics.</p>
+
+              <h2 className="mt-3 text-2xl font-black tracking-tight sm:text-3xl">
+                Tell us what you lost.
+              </h2>
+
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+                Add enough detail for the AI to ask a useful question and
+                compare the right characteristics.
+              </p>
             </div>
 
             <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-2">
               <div className="px-2">
-                <p className="text-xs font-bold text-slate-800">Demo mode</p>
-                <p className="text-[11px] text-slate-500">No real call</p>
+                <p className="text-xs font-bold text-slate-800">
+                  Demo mode
+                </p>
+
+                <p className="text-[11px] text-slate-500">
+                  No real call
+                </p>
               </div>
+
               <button
                 type="button"
                 aria-label="Toggle Demo Mode"
@@ -675,9 +1125,15 @@ export default function Home() {
                   setDemoMode(!demoMode);
                   resetSearchState();
                 }}
-                className={`relative h-7 w-12 rounded-full transition ${demoMode ? "bg-blue-600" : "bg-slate-300"}`}
+                className={`relative h-7 w-12 rounded-full transition ${
+                  demoMode ? "bg-blue-600" : "bg-slate-300"
+                }`}
               >
-                <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${demoMode ? "left-6" : "left-1"}`} />
+                <span
+                  className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${
+                    demoMode ? "left-6" : "left-1"
+                  }`}
+                />
               </button>
             </div>
           </div>
@@ -686,7 +1142,13 @@ export default function Home() {
             <div>
               <div className="grid gap-5 sm:grid-cols-2">
                 <div>
-                  <label htmlFor="itemName" className="mb-2 block text-sm font-bold text-slate-800">Item name</label>
+                  <label
+                    htmlFor="itemName"
+                    className="mb-2 block text-sm font-bold text-slate-800"
+                  >
+                    Item name
+                  </label>
+
                   <input
                     id="itemName"
                     type="text"
@@ -696,8 +1158,15 @@ export default function Home() {
                     className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10"
                   />
                 </div>
+
                 <div>
-                  <label htmlFor="lostWhen" className="mb-2 block text-sm font-bold text-slate-800">When did you lose it?</label>
+                  <label
+                    htmlFor="lostWhen"
+                    className="mb-2 block text-sm font-bold text-slate-800"
+                  >
+                    When did you lose it?
+                  </label>
+
                   <input
                     id="lostWhen"
                     type="text"
@@ -711,9 +1180,18 @@ export default function Home() {
 
               <div className="mt-5">
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <label htmlFor="description" className="block text-sm font-bold text-slate-800">Describe the item</label>
-                  <span className="text-[11px] font-semibold text-slate-400">More detail = better comparison</span>
+                  <label
+                    htmlFor="description"
+                    className="block text-sm font-bold text-slate-800"
+                  >
+                    Describe the item
+                  </label>
+
+                  <span className="text-[11px] font-semibold text-slate-400">
+                    More detail = better comparison
+                  </span>
                 </div>
+
                 <textarea
                   id="description"
                   value={description}
@@ -725,10 +1203,17 @@ export default function Home() {
               </div>
 
               <div className="mt-7 flex items-center gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-600"><Icon name="sparkles" size={17} /></div>
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-600">
+                  <Icon name="sparkles" size={17} />
+                </div>
+
                 <div>
                   <p className="text-xs font-bold text-slate-800">Tip</p>
-                  <p className="text-xs leading-5 text-slate-500">Include color, markings, accessories, and contents when possible.</p>
+
+                  <p className="text-xs leading-5 text-slate-500">
+                    Include color, markings, accessories, and contents when
+                    possible.
+                  </p>
                 </div>
               </div>
             </div>
@@ -736,18 +1221,30 @@ export default function Home() {
             <div>
               <div className="flex items-end justify-between gap-4">
                 <div>
-                  <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-600">Step 2</p>
-                  <h3 className="mt-2 text-xl font-black tracking-tight">Choose the location.</h3>
-                  <p className="mt-1 text-sm text-slate-500">Select a contact from the verified network.</p>
+                  <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-600">
+                    Step 2
+                  </p>
+
+                  <h3 className="mt-2 text-xl font-black tracking-tight">
+                    Choose the location.
+                  </h3>
+
+                  <p className="mt-1 text-sm text-slate-500">
+                    Select a contact from the verified network.
+                  </p>
                 </div>
+
                 {selectedLocation && (
-                  <span className="hidden rounded-full bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700 sm:block">Selected</span>
+                  <span className="hidden rounded-full bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700 sm:block">
+                    Selected
+                  </span>
                 )}
               </div>
 
               <div className="mt-5 space-y-3">
                 {locations.map((place) => {
                   const isSelected = location === place.id;
+
                   return (
                     <button
                       key={place.id}
@@ -767,18 +1264,51 @@ export default function Home() {
                       }`}
                     >
                       <div className="flex items-start gap-3">
-                        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${isSelected ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                        <span
+                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                            isSelected
+                              ? "bg-blue-600 text-white"
+                              : "bg-slate-100 text-slate-500"
+                          }`}
+                        >
                           <Icon name="map" size={18} />
                         </span>
+
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center justify-between gap-3">
-                            <span className="truncate text-sm font-extrabold text-slate-900">{place.name}</span>
-                            {isSelected && <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white"><Icon name="check" size={13} /></span>}
+                            <span className="truncate text-sm font-extrabold text-slate-900">
+                              {place.name}
+                            </span>
+
+                            {isSelected && (
+                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white">
+                                <Icon name="check" size={13} />
+                              </span>
+                            )}
                           </span>
-                          <span className="mt-1 block text-xs text-slate-500">{place.city} · {place.contactType}</span>
-                          <span className={`mt-2 inline-flex items-center gap-1.5 text-[11px] font-bold ${place.liveCallingEnabled ? "text-emerald-600" : "text-slate-400"}`}>
-                            <span className={`h-1.5 w-1.5 rounded-full ${place.liveCallingEnabled ? "bg-emerald-500" : "bg-slate-300"}`} />
-                            {place.liveCallingEnabled ? "Live calling available" : "Contact verification pending"}
+
+                          <span className="mt-1 block text-xs text-slate-500">
+                            {place.city} · {place.contactType}
+                          </span>
+
+                          <span
+                            className={`mt-2 inline-flex items-center gap-1.5 text-[11px] font-bold ${
+                              place.liveCallingEnabled
+                                ? "text-emerald-600"
+                                : "text-slate-400"
+                            }`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${
+                                place.liveCallingEnabled
+                                  ? "bg-emerald-500"
+                                  : "bg-slate-300"
+                              }`}
+                            />
+
+                            {place.liveCallingEnabled
+                              ? "Live calling available"
+                              : "Contact verification pending"}
                           </span>
                         </span>
                       </div>
@@ -794,10 +1324,18 @@ export default function Home() {
             <div className="mt-8 rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-white p-5 sm:p-6">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-violet-600">Quick demo</p>
-                  <h3 className="mt-1 text-lg font-black text-slate-950">Preview three possible outcomes</h3>
+                  <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-violet-600">
+                    Quick demo
+                  </p>
+
+                  <h3 className="mt-1 text-lg font-black text-slate-950">
+                    Preview three possible outcomes
+                  </h3>
                 </div>
-                <p className="text-xs text-slate-500">No real phone call is placed.</p>
+
+                <p className="text-xs text-slate-500">
+                  No real phone call is placed.
+                </p>
               </div>
 
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -811,10 +1349,19 @@ export default function Home() {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-2xl">{scenario.icon}</span>
-                      <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide text-slate-500">Try</span>
+
+                      <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide text-slate-500">
+                        Try
+                      </span>
                     </div>
-                    <p className="mt-4 text-sm font-extrabold text-slate-900">{scenario.title}</p>
-                    <p className="mt-1 text-xs font-bold text-violet-600">{scenario.outcome}</p>
+
+                    <p className="mt-4 text-sm font-extrabold text-slate-900">
+                      {scenario.title}
+                    </p>
+
+                    <p className="mt-1 text-xs font-bold text-violet-600">
+                      {scenario.outcome}
+                    </p>
                   </button>
                 ))}
               </div>
@@ -825,19 +1372,40 @@ export default function Home() {
           <div className="mt-8 rounded-2xl bg-slate-950 p-4 sm:p-5">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
-                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/10 text-blue-300"><Icon name={demoMode ? "sparkles" : "phone"} size={19} /></span>
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/10 text-blue-300">
+                  <Icon
+                    name={demoMode ? "sparkles" : "phone"}
+                    size={19}
+                  />
+                </span>
+
                 <div>
-                  <p className="text-sm font-bold text-white">{demoMode ? "Ready for a safe product demo?" : "Ready to make a real CALL-E search?"}</p>
-                  <p className="mt-0.5 text-xs text-slate-400">{selectedLocation ? `Target: ${selectedLocation.name}` : "Choose a location first"}</p>
+                  <p className="text-sm font-bold text-white">
+                    {demoMode
+                      ? "Ready for a safe product demo?"
+                      : "Ready to make a real CALL-E search?"}
+                  </p>
+
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    {selectedLocation
+                      ? `Target: ${selectedLocation.name}`
+                      : "Choose a location first"}
+                  </p>
                 </div>
               </div>
+
               <button
                 type="button"
                 onClick={handleSearch}
                 disabled={isCalling}
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3.5 text-sm font-extrabold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isCalling ? "AI is searching..." : demoMode ? "Run demo search" : "Start AI search"}
+                {isCalling
+                  ? "AI is searching..."
+                  : demoMode
+                  ? "Run demo search"
+                  : "Start AI search"}
+
                 {!isCalling && <Icon name="arrow" size={17} />}
               </button>
             </div>
@@ -845,7 +1413,10 @@ export default function Home() {
 
           {message && (
             <div className="mt-5 flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50/70 p-4 text-sm font-medium text-blue-800">
-              <span className="mt-0.5 text-blue-600"><Icon name="info" size={17} /></span>
+              <span className="mt-0.5 text-blue-600">
+                <Icon name="info" size={17} />
+              </span>
+
               <p>{message}</p>
             </div>
           )}
@@ -855,11 +1426,30 @@ export default function Home() {
             <div className="mt-8 rounded-2xl border border-slate-200 bg-slate-50/80 p-5 sm:p-7">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-600">CALL-E activity</p>
-                  <h3 className="mt-2 text-xl font-black">{isCalling ? "Search in progress" : "Search completed"}</h3>
+                  <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-600">
+                    CALL-E activity
+                  </p>
+
+                  <h3 className="mt-2 text-xl font-black">
+                    {isCalling ? "Search in progress" : "Search completed"}
+                  </h3>
                 </div>
-                <span className={`inline-flex w-fit items-center gap-2 rounded-full px-3 py-1.5 text-[11px] font-extrabold ${isCalling ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700"}`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${isCalling ? "animate-pulse bg-blue-600" : "bg-emerald-600"}`} />
+
+                <span
+                  className={`inline-flex w-fit items-center gap-2 rounded-full px-3 py-1.5 text-[11px] font-extrabold ${
+                    isCalling
+                      ? "bg-blue-100 text-blue-700"
+                      : "bg-emerald-100 text-emerald-700"
+                  }`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      isCalling
+                        ? "animate-pulse bg-blue-600"
+                        : "bg-emerald-600"
+                    }`}
+                  />
+
                   {isCalling ? "Working" : "Complete"}
                 </span>
               </div>
@@ -869,20 +1459,63 @@ export default function Home() {
                   const isCompleted = index < activeStageIndex;
                   const isActive = index === activeStageIndex;
                   const isUpcoming = index > activeStageIndex;
+
                   return (
                     <div key={stage.id} className="relative flex gap-4">
                       {index < callStages.length - 1 && (
-                        <div className={`absolute left-[15px] top-8 h-[calc(100%-2px)] w-px ${index < activeStageIndex ? "bg-emerald-300" : "bg-slate-200"}`} />
+                        <div
+                          className={`absolute left-[15px] top-8 h-[calc(100%-2px)] w-px ${
+                            index < activeStageIndex
+                              ? "bg-emerald-300"
+                              : "bg-slate-200"
+                          }`}
+                        />
                       )}
-                      <div className={`relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-black ${isCompleted ? "border-emerald-200 bg-emerald-50 text-emerald-600" : isActive ? "border-blue-600 bg-blue-600 text-white shadow-lg shadow-blue-600/20" : "border-slate-200 bg-white text-slate-300"}`}>
-                        {isCompleted ? <Icon name="check" size={14} /> : index + 1}
+
+                      <div
+                        className={`relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-black ${
+                          isCompleted
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-600"
+                            : isActive
+                            ? "border-blue-600 bg-blue-600 text-white shadow-lg shadow-blue-600/20"
+                            : "border-slate-200 bg-white text-slate-300"
+                        }`}
+                      >
+                        {isCompleted ? (
+                          <Icon name="check" size={14} />
+                        ) : (
+                          index + 1
+                        )}
                       </div>
-                      <div className={`min-h-[72px] pb-5 transition ${isUpcoming ? "opacity-40" : ""}`}>
+
+                      <div
+                        className={`min-h-[72px] pb-5 transition ${
+                          isUpcoming ? "opacity-40" : ""
+                        }`}
+                      >
                         <div className="flex flex-wrap items-center gap-2">
-                          <p className={`text-sm font-extrabold ${isActive ? "text-blue-700" : isCompleted ? "text-emerald-700" : "text-slate-500"}`}>{stage.title}</p>
-                          {isActive && isCalling && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-blue-700">Current</span>}
+                          <p
+                            className={`text-sm font-extrabold ${
+                              isActive
+                                ? "text-blue-700"
+                                : isCompleted
+                                ? "text-emerald-700"
+                                : "text-slate-500"
+                            }`}
+                          >
+                            {stage.title}
+                          </p>
+
+                          {isActive && isCalling && (
+                            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-blue-700">
+                              Current
+                            </span>
+                          )}
                         </div>
-                        <p className="mt-1 text-xs leading-5 text-slate-500">{stage.description}</p>
+
+                        <p className="mt-1 text-xs leading-5 text-slate-500">
+                          {stage.description}
+                        </p>
                       </div>
                     </div>
                   );
@@ -896,19 +1529,62 @@ export default function Home() {
             <div className="mt-8 rounded-2xl border border-violet-200 bg-violet-50/60 p-5 sm:p-7">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-violet-600">Conversation preview</p>
-                  <h3 className="mt-2 text-xl font-black">AI ↔ Lost & Found staff</h3>
-                  <p className="mt-1 text-xs text-slate-500">Simulated transcript for the product demonstration.</p>
+                  <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-violet-600">
+                    Conversation preview
+                  </p>
+
+                  <h3 className="mt-2 text-xl font-black">
+                    AI ↔ Lost & Found staff
+                  </h3>
+
+                  <p className="mt-1 text-xs text-slate-500">
+                    Simulated transcript for the product demonstration.
+                  </p>
                 </div>
-                <span className="w-fit rounded-full bg-violet-100 px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wide text-violet-700">Demo</span>
+
+                <span className="w-fit rounded-full bg-violet-100 px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wide text-violet-700">
+                  Demo
+                </span>
               </div>
 
               <div className="mt-6 space-y-3">
                 {conversation.map((turn, index) => (
-                  <div key={`${turn.speaker}-${index}`} className={`flex ${turn.speaker === "ai" ? "justify-start" : "justify-end"}`}>
-                    <div className={`max-w-[88%] rounded-2xl p-4 ${turn.speaker === "ai" ? "rounded-tl-md border border-slate-200 bg-white" : "rounded-tr-md bg-violet-600 text-white"}`}>
-                      <p className={`text-[10px] font-extrabold uppercase tracking-wider ${turn.speaker === "ai" ? "text-violet-600" : "text-violet-100"}`}>{turn.speaker === "ai" ? "Lost&Found AI" : "Staff"}</p>
-                      <p className={`mt-1 text-sm leading-6 ${turn.speaker === "ai" ? "text-slate-700" : "text-white"}`}>{turn.text}</p>
+                  <div
+                    key={`${turn.speaker}-${index}`}
+                    className={`flex ${
+                      turn.speaker === "ai"
+                        ? "justify-start"
+                        : "justify-end"
+                    }`}
+                  >
+                    <div
+                      className={`max-w-[88%] rounded-2xl p-4 ${
+                        turn.speaker === "ai"
+                          ? "rounded-tl-md border border-slate-200 bg-white"
+                          : "rounded-tr-md bg-violet-600 text-white"
+                      }`}
+                    >
+                      <p
+                        className={`text-[10px] font-extrabold uppercase tracking-wider ${
+                          turn.speaker === "ai"
+                            ? "text-violet-600"
+                            : "text-violet-100"
+                        }`}
+                      >
+                        {turn.speaker === "ai"
+                          ? "Lost&Found AI"
+                          : "Staff"}
+                      </p>
+
+                      <p
+                        className={`mt-1 text-sm leading-6 ${
+                          turn.speaker === "ai"
+                            ? "text-slate-700"
+                            : "text-white"
+                        }`}
+                      >
+                        {turn.text}
+                      </p>
                     </div>
                   </div>
                 ))}
@@ -919,14 +1595,36 @@ export default function Home() {
           {/* Result */}
           {result && (
             <div className="mt-8 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
-              <div className={`border-b px-5 py-6 sm:px-7 ${resultTone === "emerald" ? "border-emerald-100 bg-emerald-50/60" : resultTone === "rose" ? "border-rose-100 bg-rose-50/50" : "border-amber-100 bg-amber-50/50"}`}>
+              <div
+                className={`border-b px-5 py-6 sm:px-7 ${
+                  resultTone === "emerald"
+                    ? "border-emerald-100 bg-emerald-50/60"
+                    : resultTone === "rose"
+                    ? "border-rose-100 bg-rose-50/50"
+                    : "border-amber-100 bg-amber-50/50"
+                }`}
+              >
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-600">Step 3 · Recovery result</p>
-                    <h3 className="mt-2 text-2xl font-black tracking-tight">{result.possible_match === "yes" ? "A possible match was found." : result.possible_match === "no" ? "No matching item was reported." : "The result needs more information."}</h3>
+                    <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-600">
+                      Step 3 · Recovery result
+                    </p>
+
+                    <h3 className="mt-2 text-2xl font-black tracking-tight">
+                      {result.possible_match === "yes"
+                        ? "A possible match was found."
+                        : result.possible_match === "no"
+                        ? "No matching item was reported."
+                        : "The result needs more information."}
+                    </h3>
                   </div>
-                  <span className={`w-fit rounded-full border px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wide ${getConfidenceStyle()}`}>
-                    {demoMode ? "Simulated result" : "Real CALL-E result"}
+
+                  <span
+                    className={`w-fit rounded-full border px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wide ${getConfidenceStyle()}`}
+                  >
+                    {demoMode
+                      ? "Simulated result"
+                      : "Real CALL-E result"}
                   </span>
                 </div>
               </div>
@@ -934,34 +1632,74 @@ export default function Home() {
               <div className="p-5 sm:p-7">
                 {demoMode ? (
                   <div className="mb-6 flex gap-3 rounded-2xl border border-violet-200 bg-violet-50/60 p-4">
-                    <span className="mt-0.5 text-violet-600"><Icon name="sparkles" size={17} /></span>
+                    <span className="mt-0.5 text-violet-600">
+                      <Icon name="sparkles" size={17} />
+                    </span>
+
                     <div>
-                      <p className="text-sm font-bold text-violet-900">Demonstration result</p>
-                      <p className="mt-1 text-xs leading-5 text-violet-700">The conversation and staff response are simulated. No real staff member verified this item.</p>
+                      <p className="text-sm font-bold text-violet-900">
+                        Demonstration result
+                      </p>
+
+                      <p className="mt-1 text-xs leading-5 text-violet-700">
+                        The conversation and staff response are simulated. No
+                        real staff member verified this item.
+                      </p>
                     </div>
                   </div>
                 ) : (
                   <div className="mb-6 flex gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                    <span className="mt-0.5 text-emerald-600"><Icon name="phone" size={17} /></span>
+                    <span className="mt-0.5 text-emerald-600">
+                      <Icon name="phone" size={17} />
+                    </span>
+
                     <div>
-                      <p className="text-sm font-bold text-emerald-900">CALL-E live result</p>
-                      <p className="mt-1 text-xs leading-5 text-emerald-700">This result came from the CALL-E phone-call workflow and its structured response.</p>
+                      <p className="text-sm font-bold text-emerald-900">
+                        CALL-E live result
+                      </p>
+
+                      <p className="mt-1 text-xs leading-5 text-emerald-700">
+                        This result came from the CALL-E phone-call workflow
+                        and its structured response.
+                      </p>
                     </div>
                   </div>
                 )}
 
                 <div className="grid gap-3 sm:grid-cols-3">
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Possible match</p>
-                    <p className="mt-2 text-lg font-black text-slate-950">{result.possible_match === "yes" ? "Likely found" : result.possible_match === "no" ? "No match" : "Unknown"}</p>
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                      Possible match
+                    </p>
+
+                    <p className="mt-2 text-lg font-black text-slate-950">
+                      {result.possible_match === "yes"
+                        ? "Likely found"
+                        : result.possible_match === "no"
+                        ? "No match"
+                        : "Unknown"}
+                    </p>
                   </div>
+
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Location contacted</p>
-                    <p className="mt-2 text-sm font-black text-slate-950">{selectedLocation?.name ?? "Unknown"}</p>
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                      Location contacted
+                    </p>
+
+                    <p className="mt-2 text-sm font-black text-slate-950">
+                      {selectedLocation?.name ?? "Unknown"}
+                    </p>
                   </div>
+
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Contact status</p>
-                    <p className="mt-2 text-sm font-black capitalize text-slate-950">{result.contact_status?.replaceAll("_", " ") ?? "Unknown"}</p>
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                      Contact status
+                    </p>
+
+                    <p className="mt-2 text-sm font-black capitalize text-slate-950">
+                      {result.contact_status?.replaceAll("_", " ") ??
+                        "Unknown"}
+                    </p>
                   </div>
                 </div>
 
@@ -969,32 +1707,87 @@ export default function Home() {
                   <div className="mt-4 rounded-2xl border border-slate-200 p-5">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
-                        <p className="text-sm font-extrabold">{demoMode ? "Demo match score" : "Match confidence"}</p>
-                        <p className="mt-1 text-xs text-slate-400">{demoMode ? "Based on item characteristics and description quality" : "Based on information returned from the CALL-E conversation"}</p>
+                        <p className="text-sm font-extrabold">
+                          {demoMode
+                            ? "Demo match score"
+                            : "Match confidence"}
+                        </p>
+
+                        <p className="mt-1 text-xs text-slate-400">
+                          {demoMode
+                            ? "Based on item characteristics and description quality"
+                            : "Based on information returned from the CALL-E conversation"}
+                        </p>
                       </div>
-                      <span className={`w-fit rounded-full border px-3 py-1.5 text-xs font-extrabold ${getConfidenceStyle()}`}>{result.confidence_label}</span>
+
+                      <span
+                        className={`w-fit rounded-full border px-3 py-1.5 text-xs font-extrabold ${getConfidenceStyle()}`}
+                      >
+                        {result.confidence_label}
+                      </span>
                     </div>
+
                     <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100">
-                      <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-violet-500 transition-all duration-700" style={{ width: `${Math.max(0, Math.min(100, result.confidence))}%` }} />
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-blue-500 to-violet-500 transition-all duration-700"
+                        style={{
+                          width: `${Math.max(
+                            0,
+                            Math.min(100, result.confidence)
+                          )}%`,
+                        }}
+                      />
                     </div>
-                    <div className="mt-2 flex justify-end text-xs font-black text-slate-500">{result.confidence}%</div>
+
+                    <div className="mt-2 flex justify-end text-xs font-black text-slate-500">
+                      {result.confidence}%
+                    </div>
                   </div>
                 )}
 
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="rounded-2xl border border-slate-200 p-5">
-                    <div className="flex items-center gap-2 text-slate-500"><Icon name="sparkles" size={16} /><p className="text-xs font-extrabold uppercase tracking-wide">What the AI found</p></div>
-                    <p className="mt-3 text-sm leading-6 text-slate-700">{result.staff_summary ?? "No summary available."}</p>
+                    <div className="flex items-center gap-2 text-slate-500">
+                      <Icon name="sparkles" size={16} />
+
+                      <p className="text-xs font-extrabold uppercase tracking-wide">
+                        What the AI found
+                      </p>
+                    </div>
+
+                    <p className="mt-3 text-sm leading-6 text-slate-700">
+                      {result.staff_summary ?? "No summary available."}
+                    </p>
                   </div>
+
                   <div className="rounded-2xl border border-slate-200 p-5">
-                    <div className="flex items-center gap-2 text-slate-500"><Icon name="search" size={16} /><p className="text-xs font-extrabold uppercase tracking-wide">Why it looks this way</p></div>
-                    <p className="mt-3 text-sm leading-6 text-slate-700">{result.matched_details ?? "No matching details available."}</p>
+                    <div className="flex items-center gap-2 text-slate-500">
+                      <Icon name="search" size={16} />
+
+                      <p className="text-xs font-extrabold uppercase tracking-wide">
+                        Why it looks this way
+                      </p>
+                    </div>
+
+                    <p className="mt-3 text-sm leading-6 text-slate-700">
+                      {result.matched_details ??
+                        "No matching details available."}
+                    </p>
                   </div>
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-5">
-                  <div className="flex items-center gap-2 text-blue-700"><Icon name="arrow" size={16} /><p className="text-xs font-extrabold uppercase tracking-wide">Recommended next step</p></div>
-                  <p className="mt-3 text-sm leading-6 text-blue-950">{result.next_step ?? "No next step available."}</p>
+                  <div className="flex items-center gap-2 text-blue-700">
+                    <Icon name="arrow" size={16} />
+
+                    <p className="text-xs font-extrabold uppercase tracking-wide">
+                      Recommended next step
+                    </p>
+                  </div>
+
+                  <p className="mt-3 text-sm leading-6 text-blue-950">
+                    {result.next_step ?? "No next step available."}
+                  </p>
                 </div>
               </div>
             </div>
@@ -1003,39 +1796,115 @@ export default function Home() {
 
         {/* History */}
         {callHistory.length > 0 && (
-          <section id="history" className="scroll-mt-24 mt-10 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm sm:p-8">
+          <section
+            id="history"
+            className="scroll-mt-24 mt-10 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm sm:p-8"
+          >
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-600">Search history</p>
-                <h2 className="mt-2 text-2xl font-black tracking-tight">Previous searches</h2>
-                <p className="mt-1 text-sm text-slate-500">Kept only for this browser session.</p>
+                <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-blue-600">
+                  Search history
+                </p>
+
+                <h2 className="mt-2 text-2xl font-black tracking-tight">
+                  Previous searches
+                </h2>
+
+                <p className="mt-1 text-sm text-slate-500">
+                  Saved in your database so previous searches remain after refresh.
+                </p>
               </div>
-              <button type="button" onClick={clearHistory} className="inline-flex w-fit items-center gap-2 rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs font-bold text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600">
-                <Icon name="trash" size={14} /> Clear history
+
+              <button
+                type="button"
+                onClick={clearHistory}
+                className="inline-flex w-fit items-center gap-2 rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs font-bold text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
+              >
+                <Icon name="trash" size={14} />
+                Clear history
               </button>
             </div>
 
             <div className="mt-6 space-y-3">
               {callHistory.map((historyItem) => {
-                const isSelected = selectedHistoryId === historyItem.id;
-                const matchLabel = historyItem.result.possible_match === "yes" ? "Likely match" : historyItem.result.possible_match === "no" ? "No match" : "Uncertain";
-                const matchStyle = historyItem.result.possible_match === "yes" ? "bg-emerald-50 text-emerald-700" : historyItem.result.possible_match === "no" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700";
+                const isSelected =
+                  selectedHistoryId === historyItem.id;
+
+                const matchLabel =
+                  historyItem.result.possible_match === "yes"
+                    ? "Likely match"
+                    : historyItem.result.possible_match === "no"
+                    ? "No match"
+                    : "Uncertain";
+
+                const matchStyle =
+                  historyItem.result.possible_match === "yes"
+                    ? "bg-emerald-50 text-emerald-700"
+                    : historyItem.result.possible_match === "no"
+                    ? "bg-rose-50 text-rose-700"
+                    : "bg-amber-50 text-amber-700";
 
                 return (
-                  <button key={historyItem.id} type="button" onClick={() => handleHistorySelect(historyItem)} className={`w-full rounded-2xl border p-4 text-left transition ${isSelected ? "border-blue-400 bg-blue-50/60" : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"}`}>
+                  <button
+                    key={historyItem.id}
+                    type="button"
+                    onClick={() =>
+                      handleHistorySelect(historyItem)
+                    }
+                    className={`w-full rounded-2xl border p-4 text-left transition ${
+                      isSelected
+                        ? "border-blue-400 bg-blue-50/60"
+                        : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                    }`}
+                  >
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="flex items-start gap-3">
-                        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${historyItem.mode === "demo" ? "bg-violet-50 text-violet-600" : "bg-blue-50 text-blue-600"}`}>
-                          <Icon name={historyItem.mode === "demo" ? "sparkles" : "phone"} size={17} />
+                        <span
+                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                            historyItem.mode === "demo"
+                              ? "bg-violet-50 text-violet-600"
+                              : "bg-blue-50 text-blue-600"
+                          }`}
+                        >
+                          <Icon
+                            name={
+                              historyItem.mode === "demo"
+                                ? "sparkles"
+                                : "phone"
+                            }
+                            size={17}
+                          />
                         </span>
+
                         <span>
-                          <span className="block text-sm font-extrabold text-slate-900">{historyItem.itemName}</span>
-                          <span className="mt-1 block text-xs text-slate-500">{historyItem.locationName} · {historyItem.mode === "demo" ? "Demo" : "Live CALL-E"} · {historyItem.createdAt}</span>
+                          <span className="block text-sm font-extrabold text-slate-900">
+                            {historyItem.itemName}
+                          </span>
+
+                          <span className="mt-1 block text-xs text-slate-500">
+                            {historyItem.locationName} ·{" "}
+                            {historyItem.mode === "demo"
+                              ? "Demo"
+                              : "Live CALL-E"}{" "}
+                            · {historyItem.createdAt}
+                          </span>
                         </span>
                       </div>
+
                       <span className="flex items-center gap-2">
-                        <span className={`rounded-full px-2.5 py-1 text-[10px] font-extrabold ${matchStyle}`}>{matchLabel}</span>
-                        {historyItem.result.confidence !== undefined && <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500">{historyItem.result.confidence}%</span>}
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-[10px] font-extrabold ${matchStyle}`}
+                        >
+                          {matchLabel}
+                        </span>
+
+                        {historyItem.result.confidence !==
+                          undefined && (
+                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500">
+                            {historyItem.result.confidence}%
+                          </span>
+                        )}
+
                         <Icon name="chevron" size={16} />
                       </span>
                     </div>
@@ -1050,16 +1919,45 @@ export default function Home() {
         <footer className="mt-12 border-t border-slate-200 pt-8">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-extrabold text-slate-900">Lost&Found Caller</p>
-              <p className="mt-1 text-xs text-slate-500">AI-powered search for the physical world.</p>
+              <p className="text-sm font-extrabold text-slate-900">
+                Lost&Found Caller
+              </p>
+
+              <p className="mt-1 text-xs text-slate-500">
+                AI-powered search for the physical world.
+              </p>
             </div>
+
             <div className="flex flex-wrap items-center gap-5 text-xs font-semibold text-slate-500">
-              <a href="#how-it-works" className="transition hover:text-slate-900">How it works</a>
-              <a href="#search" className="transition hover:text-slate-900">Search</a>
-              <a href="https://call-e.devpost.com/" target="_blank" rel="noreferrer" className="transition hover:text-blue-600">CALL-E ↗</a>
+              <a
+                href="#how-it-works"
+                className="transition hover:text-slate-900"
+              >
+                How it works
+              </a>
+
+              <a
+                href="#search"
+                className="transition hover:text-slate-900"
+              >
+                Search
+              </a>
+
+              <a
+                href="https://call-e.devpost.com/"
+                target="_blank"
+                rel="noreferrer"
+                className="transition hover:text-blue-600"
+              >
+                CALL-E ↗
+              </a>
             </div>
           </div>
-          <p className="mt-6 pb-2 text-center text-[11px] text-slate-400">Built with CALL-E · Demo locations use controlled contact verification before live calling is enabled.</p>
+
+          <p className="mt-6 pb-2 text-center text-[11px] text-slate-400">
+            Built with CALL-E · Demo locations use controlled contact
+            verification before live calling is enabled.
+          </p>
         </footer>
       </div>
     </main>
